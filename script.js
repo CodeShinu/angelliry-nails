@@ -2,117 +2,206 @@ const header = document.querySelector('[data-header]');
 const menuButton = document.querySelector('[data-menu-button]');
 const menu = document.querySelector('[data-menu]');
 const lightbox = document.querySelector('[data-lightbox]');
-const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let lastScroll = scrollY;
+const floatingCta = document.querySelector('[data-floating]');
+const motionQuery = matchMedia('(prefers-reduced-motion: reduce)');
+let reducedMotion = motionQuery.matches;
 let lastFocus = null;
 
+/* Menu mobile ------------------------------------------------------------ */
+function isMenuOpen() {
+  return menu.classList.contains('open');
+}
+
+function openMenu() {
+  menu.classList.add('open');
+  menuButton.setAttribute('aria-expanded', 'true');
+  menuButton.querySelector('.sr-only').textContent = 'Fechar menu';
+  document.body.classList.add('menu-open');
+  header.classList.remove('header-hidden');
+  menu.querySelector('a').focus();
+}
+
 function closeMenu(returnFocus = false) {
+  if (!isMenuOpen()) return;
   menu.classList.remove('open');
   menuButton.setAttribute('aria-expanded', 'false');
+  menuButton.querySelector('.sr-only').textContent = 'Menu';
   document.body.classList.remove('menu-open');
   if (returnFocus) menuButton.focus();
 }
-function updateHeader() {
-  const current = scrollY;
-  header.classList.toggle('scrolled', current > 24);
-  header.classList.toggle('header-hidden', current > 150 && current > lastScroll && !menu.classList.contains('open'));
-  lastScroll = Math.max(0, current);
-}
-updateHeader();
-addEventListener('scroll', updateHeader, { passive: true });
 
-menuButton.addEventListener('click', () => {
-  const open = !menu.classList.contains('open');
-  if (open) {
-    menu.classList.add('open');
-    menuButton.setAttribute('aria-expanded', 'true');
-    document.body.classList.add('menu-open');
-    menu.querySelector('a').focus();
-  } else closeMenu(true);
-});
+menuButton.addEventListener('click', () => (isMenuOpen() ? closeMenu(true) : openMenu()));
 menu.querySelectorAll('a').forEach(link => link.addEventListener('click', () => closeMenu()));
 document.addEventListener('click', event => {
-  if (menu.classList.contains('open') && !header.contains(event.target)) closeMenu();
+  if (isMenuOpen() && !header.contains(event.target)) closeMenu();
 });
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && menu.classList.contains('open')) closeMenu(true);
+  if (event.key === 'Escape' && isMenuOpen()) closeMenu(true);
+});
+// Ao voltar para o desktop com o menu aberto, fecha e libera o scroll.
+matchMedia('(min-width: 861px)').addEventListener('change', event => {
+  if (event.matches) closeMenu();
 });
 
-const sections = [...document.querySelectorAll('main section[id]')];
+/* Header + parallax: um único listener de scroll, agrupado em rAF -------- */
+let lastScroll = scrollY;
+let scrollTicking = false;
+const decorItems = new Set();
+const parallaxObserver = new IntersectionObserver(entries => entries.forEach(entry => {
+  if (entry.isIntersecting) decorItems.add(entry.target);
+  else decorItems.delete(entry.target);
+}));
+document.querySelectorAll('.decor[data-depth]').forEach(element => parallaxObserver.observe(element));
+
+function onScrollFrame() {
+  const current = scrollY;
+  header.classList.toggle('scrolled', current > 24);
+  header.classList.toggle('header-hidden', current > 150 && current > lastScroll && !isMenuOpen());
+  lastScroll = Math.max(0, current);
+
+  if (!reducedMotion) {
+    const viewportCenter = innerHeight / 2;
+    decorItems.forEach(element => {
+      const rect = element.getBoundingClientRect();
+      const offset = (rect.top + rect.height / 2 - viewportCenter) * Number(element.dataset.depth);
+      element.style.translate = `0 ${offset.toFixed(1)}px`;
+    });
+  }
+  scrollTicking = false;
+}
+
+addEventListener('scroll', () => {
+  if (scrollTicking) return;
+  scrollTicking = true;
+  requestAnimationFrame(onScrollFrame);
+}, { passive: true });
+onScrollFrame();
+
+motionQuery.addEventListener('change', event => {
+  reducedMotion = event.matches;
+  if (reducedMotion) decorItems.forEach(element => { element.style.translate = ''; });
+});
+
+/* Navegação ativa -------------------------------------------------------- */
 const navLinks = [...document.querySelectorAll('[data-nav]')];
 const sectionObserver = new IntersectionObserver(entries => entries.forEach(entry => {
   if (!entry.isIntersecting) return;
   navLinks.forEach(link => {
     const active = link.dataset.nav === entry.target.id;
     link.classList.toggle('active', active);
-    if (active) link.setAttribute('aria-current', 'location'); else link.removeAttribute('aria-current');
+    if (active) link.setAttribute('aria-current', 'location');
+    else link.removeAttribute('aria-current');
   });
 }), { rootMargin: '-35% 0px -55%', threshold: 0 });
-sections.forEach(section => sectionObserver.observe(section));
+document.querySelectorAll('main section[id]').forEach(section => sectionObserver.observe(section));
 
-const revealItems = document.querySelectorAll('.reveal');
-if (reducedMotion) revealItems.forEach(item => item.classList.add('visible'));
-else {
+/* Revelação no scroll, com stagger sutil entre irmãos -------------------- */
+const revealItems = [...document.querySelectorAll('.reveal')];
+const revealGroups = new Map();
+revealItems.forEach(item => {
+  const siblings = revealGroups.get(item.parentElement) || [];
+  siblings.push(item);
+  revealGroups.set(item.parentElement, siblings);
+});
+revealGroups.forEach(siblings => siblings.forEach((item, index) => {
+  if (index) item.style.setProperty('--reveal-delay', `${Math.min(index, 4) * 0.09}s`);
+}));
+
+if (reducedMotion || !('IntersectionObserver' in window)) {
+  revealItems.forEach(item => item.classList.add('visible'));
+} else {
   const revealObserver = new IntersectionObserver(entries => entries.forEach(entry => {
-    if (entry.isIntersecting) { entry.target.classList.add('visible'); revealObserver.unobserve(entry.target); }
-  }), { threshold: .12 });
+    if (!entry.isIntersecting) return;
+    entry.target.classList.add('visible');
+    revealObserver.unobserve(entry.target);
+  }), { threshold: 0.12, rootMargin: '0px 0px -6% 0px' });
   revealItems.forEach(item => revealObserver.observe(item));
 }
 
-document.querySelector('[data-year]').textContent = new Date().getFullYear();
-document.querySelectorAll('.price small').forEach(label => label.textContent = 'valor');
+/* Botão flutuante: some onde já existe um CTA de agendamento na tela ------ */
+const ctaZones = new Set();
+const floatingObserver = new IntersectionObserver(entries => {
+  entries.forEach(entry => (entry.isIntersecting ? ctaZones.add(entry.target) : ctaZones.delete(entry.target)));
+  const hidden = ctaZones.size > 0;
+  floatingCta.classList.toggle('is-hidden', hidden);
+  if (hidden) floatingCta.setAttribute('tabindex', '-1');
+  else floatingCta.removeAttribute('tabindex');
+}, { threshold: 0 });
+document.querySelectorAll('.hero-actions, .card-link, .services-help, .portfolio-note .text-link, .location-actions, [data-final-cta], .footer').forEach(zone => floatingObserver.observe(zone));
 
-const filterLabels = { all: 'Todos', f1: 'Molde F1', manutencao: 'Manutenção', gel: 'Banho de gel' };
-const filterButtons = [...document.querySelectorAll('[data-filter]')];
-const galleryItems = [...document.querySelectorAll('[data-category]')];
-const galleryStatus = document.querySelector('[data-gallery-status]');
-function setFilter(category, focusHeading = false) {
-  filterButtons.forEach(button => {
-    const active = button.dataset.filter === category;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', String(active));
-  });
-  galleryItems.forEach(item => { item.hidden = filterButtons.length > 0 && category !== 'all' && item.dataset.category !== category; });
-  if (galleryStatus) galleryStatus.textContent = category === 'all' ? 'Trabalho real da Angelliry.' : `Veja o trabalho disponível e acompanhe as próximas inspirações pelo Instagram.`;
-  if (focusHeading) setTimeout(() => document.querySelector('#portfolio .section-heading').focus({ preventScroll: true }), 350);
-}
-filterButtons.forEach(button => button.addEventListener('click', () => setFilter(button.dataset.filter)));
-
-const serviceCategories = ['f1', 'manutencao', 'gel'];
-document.querySelectorAll('.service-card').forEach((card, index) => {
-  card.querySelector('.card-link').dataset.cta = `service-${serviceCategories[index]}`;
-  const inspiration = document.createElement('a');
-  inspiration.href = '#portfolio';
-  inspiration.className = 'inspiration-link';
-  inspiration.textContent = 'Ver inspirações ↓';
-  inspiration.addEventListener('click', () => setFilter(serviceCategories[index], true));
-  card.append(inspiration);
-});
-
+/* Lightbox do portfólio -------------------------------------------------- */
+const galleryItems = [...document.querySelectorAll('[data-gallery]')];
 const lightboxMark = lightbox.querySelector('[data-lightbox-mark]');
+const lightboxImg = lightbox.querySelector('[data-lightbox-img]');
+const lightboxSource = lightbox.querySelector('[data-lightbox-source]');
+const lightboxTitle = lightbox.querySelector('#lightbox-title');
+const lightboxCta = lightbox.querySelector('[data-lightbox-cta]');
+const pad = n => String(n).padStart(2, '0');
+let currentPhoto = 0;
+
+function showPhoto(index) {
+  currentPhoto = (index + galleryItems.length) % galleryItems.length;
+  const item = galleryItems[currentPhoto];
+  const img = item.querySelector('img');
+  const source = item.querySelector('source');
+  // Na foto ampliada, usa sempre a maior versão do srcset (a miniatura de 400px ficaria borrada).
+  if (source) lightboxSource.srcset = source.srcset.split(',').pop().trim().split(' ')[0];
+  lightboxImg.src = img.getAttribute('src');
+  lightboxImg.width = Number(img.getAttribute('width'));
+  lightboxImg.height = Number(img.getAttribute('height'));
+  lightboxImg.alt = img.alt;
+  lightboxTitle.textContent = item.dataset.title || '';
+  lightboxMark.textContent = `${pad(currentPhoto + 1)} / ${pad(galleryItems.length)}`;
+  const message = `Oi, Angelliry! Vi a foto ${pad(currentPhoto + 1)} do portfólio no site (${(item.dataset.title || '').replace(/\.$/, '').replace(/^./, c => c.toLowerCase())}) e gostaria de fazer algo inspirado nela.`;
+  lightboxCta.href = `https://wa.me/5511914689402?text=${encodeURIComponent(message)}`;
+  lightboxCta.dataset.cta = `lightbox-whatsapp-${pad(currentPhoto + 1)}`;
+}
+
 galleryItems.forEach((item, index) => item.addEventListener('click', () => {
   lastFocus = item;
-  lightboxMark.textContent = String(index + 1).padStart(2, '0');
+  showPhoto(index);
   lightbox.showModal();
   document.body.classList.add('modal-open');
   lightbox.querySelector('[data-close]').focus();
 }));
+
+lightbox.querySelector('[data-lightbox-prev]').addEventListener('click', () => showPhoto(currentPhoto - 1));
+lightbox.querySelector('[data-lightbox-next]').addEventListener('click', () => showPhoto(currentPhoto + 1));
+lightbox.addEventListener('keydown', event => {
+  if (event.key === 'ArrowLeft') { event.preventDefault(); showPhoto(currentPhoto - 1); }
+  if (event.key === 'ArrowRight') { event.preventDefault(); showPhoto(currentPhoto + 1); }
+});
+
+// Deslizar para trocar de foto no celular
+let touchStartX = null;
+lightbox.addEventListener('touchstart', event => { touchStartX = event.touches[0].clientX; }, { passive: true });
+lightbox.addEventListener('touchend', event => {
+  if (touchStartX === null) return;
+  const delta = event.changedTouches[0].clientX - touchStartX;
+  touchStartX = null;
+  if (Math.abs(delta) > 50) showPhoto(currentPhoto + (delta < 0 ? 1 : -1));
+}, { passive: true });
+
 function closeLightbox() {
-  lightbox.close(); document.body.classList.remove('modal-open'); lastFocus?.focus();
+  if (lightbox.open) lightbox.close();
 }
+
 lightbox.querySelector('[data-close]').addEventListener('click', closeLightbox);
-lightbox.addEventListener('click', event => { if (event.target === lightbox) closeLightbox(); });
-lightbox.addEventListener('close', () => document.body.classList.remove('modal-open'));
+lightbox.addEventListener('click', event => {
+  if (event.target === lightbox) closeLightbox();
+});
+// Fecha por botão, clique no fundo ou Esc: sempre devolve o foco à foto.
+lightbox.addEventListener('close', () => {
+  document.body.classList.remove('modal-open');
+  lastFocus?.focus();
+});
 
-window.trackAngelliryCTA = detail => window.dataLayer?.push({ event: 'cta_click', ...detail });
-document.querySelectorAll('[data-cta]').forEach(element => element.addEventListener('click', () => window.trackAngelliryCTA({ cta: element.dataset.cta })));
+/* Tracking de CTAs (dataLayer) ------------------------------------------- */
+window.dataLayer = window.dataLayer || [];
+window.trackAngelliryCTA = detail => window.dataLayer.push({ event: 'cta_click', ...detail });
+document.querySelectorAll('[data-cta]').forEach(element => element.addEventListener('click', () => {
+  window.trackAngelliryCTA({ cta: element.dataset.cta });
+}));
 
-if (!reducedMotion) {
-  const heroFlower = document.querySelector('.hero-flower');
-  let ticking = false;
-  addEventListener('scroll', () => {
-    if (ticking || scrollY > innerHeight * 1.3) return;
-    ticking = true;
-    requestAnimationFrame(() => { heroFlower.style.transform = `translateY(${scrollY * .035}px) rotate(25deg)`; ticking = false; });
-  }, { passive: true });
-}
+/* Ano do rodapé ---------------------------------------------------------- */
+document.querySelector('[data-year]').textContent = new Date().getFullYear();
